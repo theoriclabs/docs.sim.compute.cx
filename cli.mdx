@@ -1,0 +1,41 @@
+---
+title: CLI Reference
+description: Thin native tsim-cli commands for hardware discovery, blob upload, validation, and kernel evaluation.
+---
+
+`tsim-cli` is a standalone native client speaking the HTTP v2 API directly. It reads `TSIM_API_URL` (or `--url`) and `TSIM_API_KEY` (or `--api-key`).
+
+## Commands
+
+```bash
+export TSIM_API_URL="https://api.sim.compute.cx"
+export TSIM_API_KEY="tsim_live_..."
+
+# List registered GPU targets or inspect a single SKU
+tsim-cli hardware --url "$TSIM_API_URL"
+tsim-cli hardware --url "$TSIM_API_URL" --target nvidia/b300_sxm
+
+# Content-addressed blob operations (dedupes via HEAD before POST)
+tsim-cli blob ensure --url "$TSIM_API_URL" --file kernel.cubin
+tsim-cli blob put    --url "$TSIM_API_URL" --file kernel.cubin
+tsim-cli blob has    --url "$TSIM_API_URL" --ref sha256:<64-hex>
+tsim-cli blob get    --url "$TSIM_API_URL" --ref sha256:<64-hex> --out output.bin
+
+# Evaluate an EvalRequest JSON file or stdin (-)
+tsim-cli eval --url "$TSIM_API_URL" --request eval_request.json
+
+# Static SASS coverage & request validation
+tsim-cli validate --url "$TSIM_API_URL" --target nvidia/b300_sxm --artifact kernel.cubin --entry my_kernel
+tsim-cli validate --url "$TSIM_API_URL" --request eval_request.json
+
+# Offline cubin packing (optional when uploading raw ELF64 .cubin without server nvdisasm)
+tsim-cli pack-cubin --in kernel.cubin --listing kernel.sass --out kernel.tsim_cubin
+```
+
+## Exit codes
+
+| Exit Code | Meaning |
+| :---: | --- |
+| `0` | Success (`status: "ok"` or valid check) |
+| `1` | HTTP error, authentication failure (`401`), or non-`ok` evaluation status |
+| `2` | Invalid CLI arguments or malformed local input file |

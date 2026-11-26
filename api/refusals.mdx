@@ -1,0 +1,37 @@
+---
+title: Stalls & Refusals
+description: The Refusal Moat—explicit refusal codes, 1-bit word taint enforcement, Blackwell TMEM leak detection, and stall counters.
+---
+
+When a GPU kernel steps outside verified architectural coverage, silent approximations corrupt RL rewards and mislead kernel engineers. **tsim enforces a strict Refusal Moat**: every boundary condition returns a structured `status: "refused"` with a machine-readable `RefusalCode` and `fallback_hint`.
+
+## RefusalCode taxonomy
+
+| `refusal.code` | Cause | `fallback_hint` | Recommended client action |
+| --- | --- | --- | --- |
+| `CONCRETE_INPUTS_REQUIRED` | A read-only buffer omitted its `blob_ref`, and a branch, memory address, warp shuffle, or special math instruction (`rsqrtf`, `expf`) read a tainted word | `provide_concrete_inputs` | Upload concrete tensor bytes via `POST /v2/blobs` and attach `blob_ref` |
+| `UNSUPPORTED_OPCODE` | The binary contains a SASS or PTX instruction form not yet registered for this SKU (also logged automatically to the demand queue) | `route_to_gpu` | Fall back to physical GPU for this candidate or adjust compiler flags |
+| `PAYLOAD_LIMIT_EXCEEDED` | A concrete uploaded blob or writable buffer exceeded the `128 MiB` server byte ceiling | `route_to_gpu` | Omit read-only weight payloads (`access: "ro"`, no `blob_ref`) or test a representative tile |
+| `UNSUPPORTED_EXECUTION_SCOPE` | Unregistered target ID or unsupported execution feature | `fix_request` | Inspect `GET /v2/hardware` for valid target IDs |
+| `MULTI_LAUNCH_UNSUPPORTED` | Multi-launch sequence requested on a target mode that forbids it | `fix_request` | Split into single-launch cases |
+
+## 1-bit word taint (safe omitted weights)
+
+To simulate 100+ MiB LLM GEMM weights without uploading giant payloads on every evaluation, omit `blob_ref` on read-only weight buffers (`access: "ro"`). Every omitted word carries a 1-bit taint tag through registers, shared memory, and tensor cores:
+- Pure arithmetic MACs (`FFMA`, `HMMA`, `WGMMA`, `UTCHMMA`) propagate taint without faulting, producing exact memory-hierarchy timing and stall counts.
+- Any control-flow predicate, indirect address calculation (such as MoE router indices or FlashMLA page tables), or value-dependent op hitting a tainted word triggers `CONCRETE_INPUTS_REQUIRED` immediately—guaranteeing tsim never guesses a branch path.
+
+## Blackwell TMEM & runtime fault detection
+
+When a kernel executes an illegal memory access, misaligned load/store, uninitialized register read, or fails to deallocate Blackwell Tensor Memory (`TMEM`) columns before exiting, tsim returns `status: "runtime_error"` with deterministic fault details—never wedging a physical GPU context with sticky `cudaErrorIllegalAddress`.
+
+## Per-PC stall counters
+
+Request `diagnostics.level = "instruction_hotspots"` with `top_k: 5` to inspect why a kernel is slow:
+
+| Counter | Hardware bottleneck indicated |
+| --- | --- |
+| `stall_mem_wait` | Global/HBM/L2 or SMEM/TMA data dependency (`LDG`, `LDS`, `UTMALDG`) |
+| `stall_exec_dep` | Register RAW/WAW pipeline dependency between ALU/FMA/tensor instructions |
+| `stall_barrier` | `__syncthreads()`, `BAR.SYNC`, warp-group `mbarrier`, or `WARPGROUP.WAIT` |
+| `stall_pipe_busy` | Functional unit issue contention (SFU/MUFU, tensor pipe, LSU queue) |

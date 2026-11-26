@@ -1,0 +1,72 @@
+---
+title: Authentication
+description: Clerk single sign-on with Compute, personal tsim_live API keys, verification, and instant revocation.
+---
+
+tsim uses the same identity model as [Compute](https://compute.cx): **Clerk** authenticates humans in the browser (shared SSO across `compute.cx` and `sim.compute.cx`), while **opaque Bearer API keys** (`tsim_live_…`) authenticate every programmatic request to `https://api.sim.compute.cx`.
+
+## Sign-in & API key lifecycle
+
+1. Navigate to [https://sim.compute.cx/keys](https://sim.compute.cx/keys).
+2. Sign in with Google, GitHub, email/password, or passkey via your Compute account (`clerk.compute.cx`).
+3. Create up to **20 active API keys** per account, each with a descriptive label (e.g. `h200-rl-worker`, `b300-ci`).
+4. Each key has 256 bits of cryptographic entropy (`tsim_live_<base64url>`). **The raw secret is returned once at creation time.** Only `hex(sha256(key))` is persisted on disk.
+5. Revoking a key from `/keys` immediately invalidates its digest—subsequent requests using that token return `HTTP 401`.
+
+## Authenticating API calls
+
+Pass your API key in the `Authorization` header on all `/v2/*` routes:
+
+```bash
+curl -fsS https://api.sim.compute.cx/v2/hardware \
+  -H "Authorization: Bearer $TSIM_API_KEY"
+```
+
+### Public vs. protected routes
+
+| Route | Auth Required | Notes |
+| --- | :---: | --- |
+| `GET /healthz`, `GET /readyz` | No | Health, readiness, target list, and concurrency telemetry |
+| `GET /openapi.json`, `GET /docs` | No | OpenAPI 3.1 schema and interactive spec |
+| `GET /v2/auth/whoami` | Yes (`Bearer`) | Returns authenticated `user_id`, `key_id`, `key_name`, `prefix`, and live `eval_count` |
+| `GET /v2/hardware`, `/v2/hardware/{target_id}` | Yes (`Bearer`) | Registered GPU specs and calibration flags |
+| `POST/HEAD/GET /v2/blobs` | Yes (`Bearer`) | Content-addressed binary store |
+| `POST /v2/compile` | Yes (`Bearer`) | Sandboxed CPU compiler (`cuda`, `ptx`, `triton` → `.cubin`) |
+| `POST /v2/evaluate` | Yes (`Bearer`) | Deterministic functional verification, timing, and stall profiling |
+
+### Inspecting your active key (`GET /v2/auth/whoami`)
+
+```bash
+curl -fsS https://api.sim.compute.cx/v2/auth/whoami \
+  -H "Authorization: Bearer $TSIM_API_KEY"
+```
+
+```json
+{
+  "authenticated": true,
+  "user_id": "user_2x...",
+  "email": "engineer@lab.ai",
+  "key_id": "key_9f1a...",
+  "key_name": "h200-rl-worker",
+  "prefix": "tsim_live_AbCdEfGh",
+  "is_static": false,
+  "eval_count": 42
+}
+```
+
+### Error responses
+
+Missing, malformed, or revoked Bearer tokens return RFC 9457 `application/problem+json` with status `401` and header `WWW-Authenticate: Bearer realm="tsim-api"`.
+
+```json
+{
+  "type": "about:blank",
+  "title": "Unauthorized",
+  "status": 401,
+  "detail": "invalid or revoked API key"
+}
+```
+
+## Dedicated single-tenant deployments
+
+For VPC-peered or air-gapped deployments running `tsim-api` inside your own infrastructure, you can optionally configure a single static `TSIM_API_KEY` or run with `TSIM_ADMIN_SECRET` for internal key provisioning. See [Self-Hosted & VPC Deployment](/guides/self-hosted).

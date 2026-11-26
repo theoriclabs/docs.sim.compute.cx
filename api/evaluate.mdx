@@ -1,0 +1,131 @@
+---
+title: POST /v2/evaluate
+description: Execute, functionally verify, time, and profile compiled kernels on virtual H200, B200, and B300 silicon.
+---
+
+`POST /v2/evaluate` runs one or more concrete launch cases on the requested hardware target, optionally compares output buffers byte-for-byte or via `allclose`, and returns deterministic cycles, silicon-calibrated `latency_us`, and per-PC stall hotspots.
+
+## Request schema
+
+- **Headers:** `Authorization: Bearer <TSIM_API_KEY>`, `Content-Type: application/json`
+- **Body limit:** `16 MiB`
+
+```json
+{
+  "job_id": "qwen-rmsnorm-h200-01",
+  "target": "nvidia/h200_sxm",
+  "artifact": {
+    "format": "cubin",
+    "blob_ref": "sha256:4a9b...c102",
+    "entry": "rmsnorm_bf16",
+    "toolchain": {
+      "compiler": "nvcc",
+      "version": "12.9",
+      "flags": ["-O3", "-arch=sm_90a"]
+    }
+  },
+  "buffers": {
+    "x": { "blob_ref": "sha256:11aa...ff01", "size_bytes": 131072, "dtype": "bf16", "shape": [16, 4096], "access": "ro" },
+    "w": { "blob_ref": "sha256:22bb...ee02", "size_bytes": 8192, "dtype": "bf16", "shape": [4096], "access": "ro" },
+    "out": { "size_bytes": 131072, "dtype": "bf16", "shape": [16, 4096], "access": "wo" }
+  },
+  "cases": [
+    {
+      "case_id": "b16_d4096",
+      "launches": [
+        {
+          "grid": [16, 1, 1],
+          "block": [256, 1, 1],
+          "shared_mem_bytes": 16384,
+          "args": ["buf:x", "buf:w", "buf:out", { "i32": 4096 }, { "f32": 1e-6 }]
+        }
+      ]
+    }
+  ],
+  "protocol": {
+    "mode": "verify_and_time",
+    "cache_state": "cold_l2",
+    "replay_count": 1
+  },
+  "verification": {
+    "comparator": "allclose",
+    "rtol": 1e-3,
+    "atol": 1e-3,
+    "expected_outputs": { "out": "sha256:99cc...dd03" },
+    "return_output_refs": false
+  },
+  "diagnostics": {
+    "level": "instruction_hotspots",
+    "top_k": 5
+  },
+  "limits": {
+    "timeout_ms": 30000
+  }
+}
+```
+
+### Key request fields
+
+- **`artifact.format`:** `"cubin"` (raw ELF64 or `TSIM_CUBIN_V1`), `"ptx"`, `"sass"`, or `"y1_asm"`.
+- **`buffers`:** Map (or array) of named device buffers.
+  - Concrete buffers supply `blob_ref` (uploaded via `POST /v2/blobs`, up to `128 MiB`).
+  - **Payload-free LLM weights:** Read-only (`access: "ro"`) buffers may omit `blob_ref` and declare logical `size_bytes` up to full device HBM (`141 GiB` H200 / `192 GiB` B200 / `262 GiB` B300). TSim tracks 1-bit word taint and refuses cleanly with `CONCRETE_INPUTS_REQUIRED` if any branch, address, or data-dependent op reads an omitted word.
+- **`launches[].args`:** Ordered kernel parameter list:
+  - `"buf:<name>"` — device pointer to declared buffer
+  - `{"i32": n}`, `{"u32": n}`, `{"i64": n}`, `{"u64": n}`, `{"f32": x}`, `{"f64": x}` — scalar values
+  - `{"bytes_ref": "sha256:...", "size_bytes": n}` — arbitrary by-value struct argument
+  - `{"tensor_map": {"blob_ref": "sha256:...", "base_buf": "<name>", "size_bytes": 64}}` — Hopper/Blackwell 64-byte `CUtensorMap` descriptor
+- **`protocol.mode`:** `"verify_and_time"` (default) or `"timing_only"`.
+- **`protocol.cache_state`:** `"cold_l2"` (default) or `"warm_l2"`.
+- **`verification.comparator`:** `"exact_bytes"` (bit-for-bit equality) or `"allclose"` (strict `NaN`/`±Inf` rejection + `rtol`/`atol` across `fp32`, `fp16`, `bf16`).
+- **`diagnostics.level`:** `"none"`, `"summary"`, or `"instruction_hotspots"` with `top_k`.
+
+## Response schema
+
+```json
+{
+  "job_id": "qwen-rmsnorm-h200-01",
+  "status": "ok",
+  "target": "nvidia/h200_sxm",
+  "simulator_version": "tsim-1.0.0",
+  "cases": [
+    {
+      "case_id": "b16_d4096",
+      "status": "ok",
+      "correctness": {
+        "passed": true,
+        "comparator": "allclose",
+        "max_abs_err": 0.00012,
+        "max_rel_err": 0.00008
+      },
+      "timing": {
+        "cycles": 4372,
+        "predicted_ps": 2645080,
+        "latency_us": 2.64508
+      },
+      "diagnostics": {
+        "summary_counters": {
+          "instructions_executed": 18420,
+          "stall_mem_wait": 1912,
+          "stall_exec_dep": 814,
+          "stall_barrier": 310,
+          "stall_pipe_busy": 196
+        },
+        "hotspots": [
+          { "pc": "0x0140", "opcode": "LDG.E.128", "stall_cycles": 1104 }
+        ]
+      }
+    }
+  ]
+}
+```
+
+### Top-level & per-case `status` values
+
+| Status | Meaning |
+| --- | --- |
+| `ok` | Executed cleanly and passed verification (if configured) |
+| `numerical_mismatch` | Executed cleanly, but output diverged from `expected_outputs` |
+| `runtime_error` | Out-of-bounds memory access, misaligned load, uninitialized register, or Blackwell TMEM leak |
+| `timeout` | Exceeded step budget derived from `limits.timeout_ms` |
+| `refused` | Explicitly refused by the Refusal Moat; inspect `refusal.code` and `refusal.fallback_hint` |

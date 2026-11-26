@@ -1,0 +1,74 @@
+---
+title: POST /v2/compile
+description: Compile CUDA C++, PTX, or Triton source code on CPU into a target ELF64 .cubin stored directly in the blob store.
+---
+
+`POST /v2/compile` compiles kernel source on CPU using NVIDIA's userspace toolchain (`nvcc 12.9`, `ptxas`, `nvdisasm`) and Triton AOT—requiring zero local CUDA installation on your machine. The compiled ELF64 `.cubin` is stored in the content-addressed blob store and returned as a `blob_ref` ready for `POST /v2/evaluate`.
+
+## Request
+
+- **Headers:** `Authorization: Bearer <TSIM_API_KEY>`, `Content-Type: application/json`
+- **Body limit:** `4 MiB`
+
+| Field | Type | Required | Description |
+| --- | --- | :---: | --- |
+| `language` | `"cuda" \| "ptx" \| "triton"` | Yes | Source language |
+| `source` | `string` | Yes | Complete CUDA C++, PTX, or Triton Python source text |
+| `target` | `string` | Recommended | TSim target ID: `nvidia/h200_sxm` (`sm_90a`), `nvidia/b200_sxm` (`sm_100a`), `nvidia/b300_sxm` (`sm_103a`) |
+| `arch` | `string` | Optional | Explicit SM architecture override (`sm_90a`, `sm_100a`, `sm_103a`); defaults from `target` |
+| `entry` | `string` | Optional | Entry kernel symbol name (especially helpful for `extern "C" __global__` or Triton `@triton.jit`) |
+| `flags` | `string[]` | Optional | Extra compiler flags (e.g. `["-O3", "--use_fast_math"]`) |
+| `triton_signature` | `object` | Triton only | Argument signature mapping for Triton AOT compilation |
+| `triton_constants` | `object` | Triton only | Compile-time `tl.constexpr` bindings for Triton AOT |
+| `timeout_s` | `number` | Optional | Per-compile timeout ceiling in seconds |
+
+### Example request
+
+```bash
+curl -fsS -X POST https://api.sim.compute.cx/v2/compile \
+  -H "Authorization: Bearer $TSIM_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "language": "cuda",
+    "target": "nvidia/b300_sxm",
+    "entry": "vec_add",
+    "flags": ["-O3"],
+    "source": "extern \"C\" __global__ void vec_add(const float* a, const float* b, float* out, int n) { int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < n) out[i] = a[i] + b[i]; }"
+  }'
+```
+
+## Response
+
+### Success (`status: "ok"`)
+
+```json
+{
+  "status": "ok",
+  "blob_ref": "sha256:8f2e...d401",
+  "sha256": "8f2e...d401",
+  "cubin_bytes": 16896,
+  "entry_symbol": "vec_add",
+  "arch": "sm_103a",
+  "regs_per_thread": 16,
+  "smem_bytes": 0,
+  "ptxas_log": "ptxas info : Used 16 registers, 384 bytes cmem[0]",
+  "compile_ms": 214,
+  "cached": false
+}
+```
+
+Repeated requests with the exact same normalized `(language, source, arch, entry, flags, ...)` return `"cached": true` in `< 1 ms`.
+
+### Compilation failure (`status: "compile_error"`)
+
+When `nvcc` / `ptxas` rejects the source, `POST /v2/compile` returns HTTP `200` with structured diagnostics so automated agents can repair syntax or register-spill errors directly:
+
+```json
+{
+  "status": "compile_error",
+  "error": "kernel.cu(4): error: identifier \"foo\" is undefined",
+  "ptxas_log": "",
+  "compile_ms": 92,
+  "cached": false
+}
+```

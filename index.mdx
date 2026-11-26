@@ -1,0 +1,58 @@
+---
+title: Introduction
+description: Bit-exact verification, silicon-calibrated timing, and per-PC stall attribution for compiled NVIDIA H200, B200, and B300 binaries over a CPU-backed HTTP v2 API.
+---
+
+**tsim** executes compiled NVIDIA Hopper (`sm_90a`) and Blackwell (`sm_100a`, `sm_103a`) `.cubin` binaries directly on standard CPU cores. Send CUDA C++, PTX, Triton, or precompiled ELF64 `.cubin` kernels to `https://api.sim.compute.cx`, and get back bit-exact output verification, deterministic architectural cycles, calibrated microsecond latency (`latency_us`), and per-PC stall hotspots—without provisioning a GPU.
+
+## Live endpoints
+
+| Surface | URL | Purpose |
+| --- | --- | --- |
+| Portal & API Keys | [https://sim.compute.cx](https://sim.compute.cx) | Sign in with your Compute account (Clerk SSO) and manage `tsim_live_…` API keys |
+| Simulator HTTP v2 API | `https://api.sim.compute.cx` | `/v2/compile`, `/v2/blobs`, `/v2/evaluate`, `/v2/hardware`, `/v2/auth/whoami` |
+| Documentation | [https://docs.sim.compute.cx](https://docs.sim.compute.cx) | API reference, calibration receipts, SDK, CLI, and agent skill |
+
+## Three-step workflow
+
+```bash
+# 1. Mint a personal API key at https://sim.compute.cx/keys
+export TSIM_API_URL="https://api.sim.compute.cx"
+export TSIM_API_KEY="tsim_live_..."
+
+# 2. Verify your key and inspect calibrated targets
+curl -fsS "$TSIM_API_URL/v2/auth/whoami" -H "Authorization: Bearer $TSIM_API_KEY"
+curl -fsS "$TSIM_API_URL/v2/hardware" -H "Authorization: Bearer $TSIM_API_KEY"
+
+# 3. Compile on CPU and simulate on calibrated H200, B200, or B300
+```
+
+See the [Quickstart](/get-started/quickstart) for a complete runnable CUDA + Python example.
+
+## Silicon-calibrated flagship GPUs
+
+All three flagship NVIDIA data-center GPUs are verified against physical locked-clock Modal silicon across full-scale LLM forward-pass operators (RMSNorm, SwiGLU, and BF16 Decode GEMM):
+
+| Target ID | Architecture | Locked P0 Clock | Correctness | Pooled Spearman ρ | Exact #1 Winners | Verified 3-Op Layer Speedup |
+| --- | --- | ---: | :---: | ---: | :---: | ---: |
+| `nvidia/h200_sxm` | `sm_90a` (Hopper, 132 SMs) | `1,980 MHz` | `20 / 20` | `0.9827` | `3 / 3` | **`16.97×`** (`376.88 → 22.21 µs`) |
+| `nvidia/b200_sxm` | `sm_100a` (Blackwell, 148 SMs) | `1,965 MHz` | `19 / 19` | `0.9802` | `3 / 3` | **`12.46×`** (`293.92 → 23.58 µs`) |
+| `nvidia/b300_sxm` | `sm_103a` (Blackwell Ultra, 148 SMs) | `2,032 MHz` | `18 / 18` | `0.9662` | `3 / 3` | **`12.33×`** (`289.79 → 23.50 µs`) |
+
+Across all three GPUs, tsim achieved **`57 / 57` (`100%`)** numerical correctness (`max_rel_l2 ≤ 1e-6`) and **`9 / 9` (`100%`)** exact top-1 winner transfer—including detecting the cross-architecture SwiGLU winner shift from `r08_vec4_fastexp_b256` on Hopper H200 to `r06_vec2_fastexp_b512` on Blackwell B200/B300.
+
+<CardGroup cols={3}>
+  <Card title="Quickstart" href="/get-started/quickstart" icon="bolt">
+    Mint a key and run your first H200 / B200 / B300 evaluation in 60 seconds.
+  </Card>
+  <Card title="HTTP v2 API" href="/api/overview" icon="code">
+    Full schemas for `/v2/compile`, `/v2/blobs`, and `/v2/evaluate`.
+  </Card>
+  <Card title="Use with an Agent" href="/get-started/agent-skill" icon="robot">
+    Wire Claude Code, Cursor, or RL rollout workers directly to `api.sim.compute.cx`.
+  </Card>
+</CardGroup>
+
+## Honest scope & Refusal Moat
+
+tsim is built in Lean 4 with an explicit **Refusal Moat**: when a kernel uses an unregistered instruction, exceeds memory limits, or branches on an omitted tensor in `timing_only` mode, the API returns a typed `refused` response with a concrete `RefusalCode` rather than silently fabricating numbers. See [Stalls & Refusals](/api/refusals) and [Benchmarks](/benchmarks) for every verified receipt and open engineering gap.

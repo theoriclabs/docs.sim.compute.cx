@@ -1,0 +1,52 @@
+---
+title: Blobs (/v2/blobs)
+description: Content-addressed binary storage for .cubin artifacts, input tensors, and expected outputs with automatic ELF64 cubin unpacking.
+---
+
+All binary artifacts (`.cubin`, `.ptx`, `.sass`) and concrete tensor payloads are uploaded once to `/v2/blobs` and referenced by their SHA-256 digest (`sha256:<64-lowercase-hex>`).
+
+## Upload a blob (`POST /v2/blobs`)
+
+- **Headers:** `Authorization: Bearer <TSIM_API_KEY>`, `Content-Type: application/octet-stream`
+- **Maximum size:** `128 MiB` per concrete blob (`HTTP 413 PAYLOAD_LIMIT_EXCEEDED` above limit)
+- **Automatic `.cubin` unpacking:** Raw ELF64 `.cubin` binaries are transparently disassembled and cached server-side via `nvdisasm -c -hex` while preserving their original ELF SHA-256 digest.
+
+```bash
+curl -fsS -X POST https://api.sim.compute.cx/v2/blobs \
+  -H "Authorization: Bearer $TSIM_API_KEY" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @kernel.cubin
+```
+
+Response (`201 Created`):
+
+```json
+{
+  "ref": "sha256:4a9b7d...c102",
+  "size_bytes": 18432,
+  "created": true
+}
+```
+
+Uploading identical bytes again is idempotent and returns `"created": false`.
+
+## Check existence before uploading (`HEAD /v2/blobs/{ref}`)
+
+Compute the local SHA-256 digest first and issue `HEAD` to avoid re-uploading large input tensors or shared `.cubin` binaries across optimization rounds:
+
+```bash
+curl -fsSI "https://api.sim.compute.cx/v2/blobs/sha256:4a9b7d...c102" \
+  -H "Authorization: Bearer $TSIM_API_KEY"
+```
+
+Returns `200 OK` if present or `404 Not Found` if missing. Both `TSimClient.ensure_blob_bytes()` and `tsim-cli blob ensure` perform this `HEAD`-before-`POST` deduplication automatically.
+
+## Download a blob (`GET /v2/blobs/{ref}`)
+
+When `verification.return_output_refs` is `true`, `POST /v2/evaluate` stages output tensors into `/v2/blobs` and returns their `sha256:...` references. Download raw bytes with:
+
+```bash
+curl -fsS "https://api.sim.compute.cx/v2/blobs/sha256:..." \
+  -H "Authorization: Bearer $TSIM_API_KEY" \
+  -o output.bin
+```

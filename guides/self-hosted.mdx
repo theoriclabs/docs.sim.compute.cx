@@ -1,0 +1,42 @@
+---
+title: Self-Hosted & Dedicated VPC Deployment
+description: Running tsim-api inside your own VPC or air-gapped environment with zero egress and persistent disk storage.
+---
+
+For teams with proprietary kernels that cannot leave their cloud VPC, `tsim-api` ships as a **12-factor, CPU-only Docker container** requiring zero GPU drivers and zero outbound internet access at runtime.
+
+## Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `8080` | HTTP listen port |
+| `TSIM_HOST` | `0.0.0.0` (when `PORT` set) | Bind IPv4 address |
+| `TSIM_BLOB_DIR` | *(in-memory)* | Persistent disk directory for SHA-256 blobs, packed `.cubin` sidecars, and compile cache |
+| `TSIM_AUTH_FILE` | `<blobDir>/../auth/api_keys.json` | Persistent JSON store for multi-tenant `tsim_live_…` SHA-256 digests |
+| `TSIM_API_KEY` | *(unset)* | Static operator Bearer token for single-tenant deployments |
+| `TSIM_ADMIN_SECRET` | *(unset)* | Internal secret enabling `/v2/internal/users/{user_id}/keys` key provisioning |
+| `TSIM_MAX_CONCURRENT_EVALS` | `4` (`8` in Docker) | Max simultaneous cold evaluations/compiles before `429 Retry-After: 1` |
+| `TSIM_MAX_BLOB_MB` | `128` | Max single concrete blob size in MiB |
+| `TSIM_BLOB_RAM_CACHE_MB` | `512` | Bounded in-memory LRU blob cache in MiB |
+| `TSIM_MAX_DISK_GB` | `40` | Disk LRU ceiling for `TSIM_BLOB_DIR` (`0` = unlimited) |
+| `TSIM_CORS_ORIGINS` | `https://sim.compute.cx,...` | Comma-separated allowed browser origins |
+
+## Memory sizing & `mimalloc` tuning
+
+Lean 4 links `mimalloc`. The container sets:
+
+```bash
+MIMALLOC_PURGE_DELAY=0
+MIMALLOC_PURGE_DECOMMITS=1
+MIMALLOC_ARENA_EAGER_COMMIT=0
+MIMALLOC_ABANDONED_PAGE_PURGE=1
+```
+
+With these flags enabled, `tsim-api` holds a flat **`89–104 MiB` RSS** under sustained `C=8` concurrent evaluations (~12 MiB per worker slot). Allocate `1 vCPU` per concurrent evaluation slot (`TSIM_MAX_CONCURRENT_EVALS = vCPU count`).
+
+## Health & readiness probes
+
+- **Liveness:** `GET /healthz` → `200 {"status": "ok", "service": "tsim-api", "version": "tsim-1.0.0"}`
+- **Readiness:** `GET /readyz` → `200` (or `503` while gracefully draining), reporting `targets`, `blob_dir_writable`, `active_evals`, `rss_mb`, `active_api_keys`, and `compiler` probe info.
+
+Contact [harsh@theoric.com](mailto:harsh@theoric.com) for dedicated single-tenant endpoints, AWS PrivateLink / GCP Private Service Connect peering, or private container registry access.

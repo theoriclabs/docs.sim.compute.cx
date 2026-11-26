@@ -1,0 +1,138 @@
+---
+title: Quickstart
+description: Sign in, mint a personal API key, compile a CUDA kernel on CPU, and evaluate it on calibrated NVIDIA H200, B200, or B300.
+---
+
+This guide takes you from zero to a verified, silicon-calibrated Blackwell B300 (`sm_103a`) or Hopper H200 (`sm_90a`) evaluation in under a minute—with no local GPU and no third-party Python dependencies.
+
+## 1. Create an API key
+
+1. Open [https://sim.compute.cx/keys](https://sim.compute.cx/keys).
+2. Sign in with your **Compute (by Theoric)** account (Google, GitHub, email/password, or passkey — SSO is shared with `compute.cx`).
+3. Enter a label (for example `b300-quickstart`) and click **Generate API Key**.
+4. Copy the `tsim_live_…` token (shown once) into your shell:
+
+```bash
+export TSIM_API_URL="https://api.sim.compute.cx"
+export TSIM_API_KEY="tsim_live_..."
+```
+
+## 2. Verify authentication
+
+```bash
+curl -fsS "$TSIM_API_URL/v2/auth/whoami" \
+  -H "Authorization: Bearer $TSIM_API_KEY"
+```
+
+Expected response:
+
+```json
+{
+  "authenticated": true,
+  "user_id": "user_...",
+  "email": "you@company.com",
+  "key_id": "key_...",
+  "key_name": "b300-quickstart",
+  "prefix": "tsim_live_...",
+  "is_static": false,
+  "eval_count": 0
+}
+```
+
+## 3. Compile on CPU and simulate on H200, B200, and B300
+
+Save this zero-dependency Python 3 script as `hello_tsim.py` and run `python3 hello_tsim.py`:
+
+```python
+import hashlib
+import json
+import os
+import struct
+import urllib.request
+
+API_URL = os.environ.get("TSIM_API_URL", "https://api.sim.compute.cx").rstrip("/")
+API_KEY = os.environ["TSIM_API_KEY"]
+
+def api_json(method: str, path: str, body: dict | None = None) -> dict:
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {"Authorization": f"Bearer {API_KEY}"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(f"{API_URL}{path}", data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=180) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+def ensure_blob(raw: bytes) -> str:
+    ref = "sha256:" + hashlib.sha256(raw).hexdigest()
+    req = urllib.request.Request(
+        f"{API_URL}/v2/blobs",
+        data=raw,
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/octet-stream",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))["ref"]
+
+CUDA_SRC = r'''
+extern "C" __global__ void vec_add_f32(
+    const float* a, const float* b, float* out, unsigned long long n
+) {
+    unsigned long long i = (unsigned long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = a[i] + b[i];
+}
+'''
+
+a_ref = ensure_blob(struct.pack("<32f", *[float(i) for i in range(32)]))
+b_ref = ensure_blob(struct.pack("<32f", *[float(i * 2) for i in range(32)]))
+exp_ref = ensure_blob(struct.pack("<32f", *[float(i * 3) for i in range(32)]))
+
+for target in ("nvidia/h200_sxm", "nvidia/b200_sxm", "nvidia/b300_sxm"):
+    comp = api_json("POST", "/v2/compile", {
+        "language": "cuda",
+        "source": CUDA_SRC,
+        "target": target,
+        "entry": "vec_add_f32",
+        "flags": ["-O3"],
+    })
+    assert comp["status"] == "ok", comp
+
+    ev = api_json("POST", "/v2/evaluate", {
+        "job_id": f"quickstart_{target.replace('/', '_')}",
+        "target": target,
+        "artifact": {
+            "format": "cubin",
+            "blob_ref": comp["blob_ref"],
+            "entry": "vec_add_f32",
+            "toolchain": {"compiler": "nvcc", "version": "12.9", "flags": ["-O3"]},
+        },
+        "buffers": {
+            "a": {"blob_ref": a_ref, "size_bytes": 128, "dtype": "fp32", "shape": [32], "access": "ro"},
+            "b": {"blob_ref": b_ref, "size_bytes": 128, "dtype": "fp32", "shape": [32], "access": "ro"},
+            "out": {"size_bytes": 128, "dtype": "fp32", "shape": [32], "access": "wo"},
+        },
+        "cases": [{
+            "case_id": "c0",
+            "launches": [{
+                "grid": [1, 1, 1],
+                "block": [32, 1, 1],
+                "args": ["buf:a", "buf:b", "buf:out", {"u64": 32}],
+            }],
+        }],
+        "protocol": {"mode": "verify_and_time", "cache_state": "cold_l2", "replay_count": 1},
+        "verification": {"comparator": "exact_bytes", "expected_outputs": {"out": exp_ref}},
+        "diagnostics": {"level": "summary", "top_k": 3},
+    })
+    c0 = ev["cases"][0]
+    t = c0["timing"]
+    print(f"{target:16s} arch={comp['arch']:7s} exact={c0['correctness']['passed']} "
+          f"cycles={t['cycles']:5d} latency_us={t['latency_us']:.3f}")
+```
+
+## Next steps
+
+- Learn how multi-tenant API keys and revocation work in [Authentication](/get-started/authentication).
+- Explore full request/response contracts in [POST /v2/compile](/api/compile) and [POST /v2/evaluate](/api/evaluate).
+- Set up an autonomous optimization loop with [RL Rollouts & Kernel Search](/guides/rl-rollouts).

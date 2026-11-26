@@ -1,0 +1,35 @@
+---
+title: Agent Skill
+description: Give Claude Code, Cursor, Codex, or autonomous kernel-search agents direct instructions for compiling and optimizing GPU kernels on CPU via tsim.
+---
+
+Coding agents can run dozens of CUDA/PTX/Triton optimization rounds on CPU against `https://api.sim.compute.cx`, verify bit-exact correctness and calibrated `latency_us` across H200, B200, and B300, and only spend physical GPU seconds once at the end for final confirmation.
+
+## Install the skill
+
+Copy or reference `SKILL.md` from the root of this repository (`https://docs.sim.compute.cx/SKILL.md` or [theoriclabs/docs.sim.compute.cx](https://github.com/theoriclabs/docs.sim.compute.cx/blob/main/SKILL.md)) into your agent's skill directory:
+
+```bash
+mkdir -p ~/.claude/skills/tsim
+curl -fsSL https://raw.githubusercontent.com/theoriclabs/docs.sim.compute.cx/main/SKILL.md \
+  -o ~/.claude/skills/tsim/SKILL.md
+```
+
+Set your API key in the environment before launching your agent:
+
+```bash
+export TSIM_API_URL="https://api.sim.compute.cx"
+export TSIM_API_KEY="tsim_live_..."
+```
+
+## Recommended autonomous optimization loop
+
+1. **Baseline first:** Compile the reference kernel via `POST /v2/compile`, upload reference input/expected-output tensors via `POST /v2/blobs`, and record baseline `cycles`, `latency_us`, and `diagnostics.summary_counters` (`stall_mem_wait`, `stall_exec_dep`, `stall_barrier`).
+2. **Use `summary_counters` + `top_k` hotspots to pick the next mutation:** High `stall_mem_wait` points to vectorization (`float4`/`__ldg`), shared-memory tiling, or TMA staging; high `stall_exec_dep` points to loop unrolling, warp-shuffle reductions, or register blocking.
+3. **Require `exact_bytes` or `allclose` parity before accepting any speedup:** Never compare timing on a `numerical_mismatch` or `runtime_error` candidate.
+4. **Exploit payload-free omitted `ro` buffers for large dense GEMMs:** When input weights don't affect control flow or addresses, omit `blob_ref` on read-only weight buffers (passing `size_bytes`, `dtype`, `shape`, `access: "ro"`) to simulate 100+ MiB LLM layers in milliseconds; if a kernel branches on omitted data, tsim returns `CONCRETE_INPUTS_REQUIRED` cleanly.
+5. **Handle `429 Retry-After` and `compile_error` cleanly:** Respect `Retry-After` on burst concurrency (`max_concurrent_evals = 8`) and feed `ptxas_log` back into the agent when compilation fails.
+
+<Tip>
+  Need a physical GPU for final end-to-end verification of your winning `.cubin`? Pair tsim with [Compute](https://docs.compute.cx) to run a single short H100/H200 verification job once your CPU search converges.
+</Tip>

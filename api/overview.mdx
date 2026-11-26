@@ -1,0 +1,50 @@
+---
+title: HTTP v2 API Overview
+description: Complete endpoint table, RFC 9457 error conventions, deterministic receipt caching, and concurrency behavior for api.sim.compute.cx.
+---
+
+**Base URL:** `https://api.sim.compute.cx`  
+**OpenAPI 3.1 Spec:** `GET https://api.sim.compute.cx/openapi.json`
+
+Every `/v2/*` endpoint accepts `Authorization: Bearer <TSIM_API_KEY>` (minted at [sim.compute.cx/keys](https://sim.compute.cx/keys)) and returns RFC 9457 `application/problem+json` on HTTP-level errors (`400`, `401`, `413`, `415`, `422`, `429`).
+
+## Endpoint summary
+
+| Method & Path | Content-Type | Auth | Description |
+| --- | --- | :---: | --- |
+| `GET /healthz` | `application/json` | Public | Liveness probe (`status: "ok"`) |
+| `GET /readyz` | `application/json` | Public | Readiness probe, registered targets, compiler probe, active concurrency |
+| `GET /openapi.json` | `application/json` | Public | Machine-readable OpenAPI 3.1 specification |
+| `GET /v2/auth/whoami` | `application/json` | Bearer | Inspect authenticated user, key prefix, and live `eval_count` |
+| `GET /v2/hardware` | `application/json` | Bearer | List all registered GPU SKUs and specs |
+| `GET /v2/hardware/{target_id}` | `application/json` | Bearer | Inspect a single GPU target (e.g. `nvidia/b300_sxm`) |
+| `POST /v2/blobs` | `application/octet-stream` | Bearer | Content-addressed upload up to `128 MiB`; raw ELF64 `.cubin` auto-unpacks |
+| `HEAD /v2/blobs/{ref}` | — | Bearer | Zero-payload existence check (`200` cached / `404` missing) |
+| `GET /v2/blobs/{ref}` | `application/octet-stream` | Bearer | Download raw blob bytes (including output tensors when requested) |
+| `POST /v2/compile` | `application/json` | Bearer | Compile CUDA C++, PTX, or Triton source on CPU into a cached `.cubin` blob |
+| `POST /v2/evaluate` | `application/json` | Bearer | Execute, verify, time, and profile compiled kernels on virtual silicon |
+
+## Concurrency & deterministic receipt memoization
+
+- **Bounded parallelism (`HTTP 429`):** The hosted API serves up to `8` concurrent cold evaluations/compilations in parallel across CPU cores. Overflow requests immediately receive `HTTP 429` with `Retry-After: 1` and zero `5xx` drops. Clients should back off and retry on `429`.
+- **Deterministic receipt cache:** Because virtual silicon execution is 100% deterministic, identical `POST /v2/evaluate` requests hit an in-memory receipt cache in `< 1 ms` without consuming an evaluation slot.
+- **Deterministic compile cache:** Identical `POST /v2/compile` requests return the cached `blob_ref` in `< 1 ms` with `"cached": true`.
+
+## Error format (`application/problem+json`)
+
+Domain and validation errors conform to RFC 9457:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Unprocessable Entity",
+  "status": 422,
+  "detail": "referenced blob 'sha256:...' was not found",
+  "errors": [
+    {
+      "location": "body.artifact.blob_ref",
+      "message": "unknown blob_ref 'sha256:...'"
+    }
+  ]
+}
+```

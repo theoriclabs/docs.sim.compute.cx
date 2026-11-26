@@ -1,0 +1,101 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "tsim",
+  "description": "Virtual GPUs for frontier kernels. Bit-exact verification, silicon-calibrated timing, and per-PC stall attribution for NVIDIA H200, B200, and B300 over a CPU-backed HTTP v2 API.",
+  "colors": {
+    "primary": "#0A0A0A",
+    "light": "#525252",
+    "dark": "#0A0A0A"
+  },
+  "logo": {
+    "light": "/logo-light.svg",
+    "dark": "/logo-dark.svg",
+    "href": "https://sim.compute.cx"
+  },
+  "favicon": "/favicon.svg",
+  "navbar": {
+    "links": [
+      {
+        "label": "Benchmarks",
+        "href": "https://sim.compute.cx/benchmarks"
+      },
+      {
+        "label": "Compute",
+        "href": "https://compute.cx"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "API Keys",
+      "href": "https://sim.compute.cx/keys"
+    }
+  },
+  "footer": {
+    "links": [
+      {
+        "header": "Product",
+        "items": [
+          { "label": "tsim", "href": "https://sim.compute.cx" },
+          { "label": "API Keys", "href": "https://sim.compute.cx/keys" },
+          { "label": "Benchmarks", "href": "https://sim.compute.cx/benchmarks" },
+          { "label": "Architecture", "href": "https://sim.compute.cx/architecture" }
+        ]
+      },
+      {
+        "header": "Theoric Labs",
+        "items": [
+          { "label": "Compute", "href": "https://compute.cx" },
+          { "label": "Compute Docs", "href": "https://docs.compute.cx" },
+          { "label": "Contact Engineering", "href": "mailto:harsh@theoric.com" }
+        ]
+      }
+    ]
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Overview",
+        "pages": ["index", "benchmarks"]
+      },
+      {
+        "group": "Get Started",
+        "pages": [
+          "get-started/quickstart",
+          "get-started/authentication",
+          "get-started/agent-skill"
+        ]
+      },
+      {
+        "group": "Hardware Targets",
+        "pages": [
+          "targets/overview"
+        ]
+      },
+      {
+        "group": "HTTP v2 API",
+        "pages": [
+          "api/overview",
+          "api/compile",
+          "api/evaluate",
+          "api/blobs",
+          "api/refusals"
+        ]
+      },
+      {
+        "group": "Clients & Guides",
+        "pages": [
+          "sdk",
+          "cli",
+          "guides/rl-rollouts",
+          "guides/self-hosted"
+        ]
+      }
+    ]
+  },
+  "seo": {
+    "metatags": {
+      "canonical": "https://docs.sim.compute.cx"
+    }
+  }
+}

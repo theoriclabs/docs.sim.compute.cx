@@ -1,0 +1,36 @@
+---
+title: Hardware Targets
+description: Registered virtual silicon targets exposed by GET /v2/hardware, physical calibration parameters, and Blackwell TMEM support.
+---
+
+Query the live hardware registry at any time via `GET /v2/hardware` or inspect a single SKU via `GET /v2/hardware/{target_id}` (for example `GET /v2/hardware/nvidia/b300_sxm`).
+
+## Registered target catalog
+
+| Target ID | Architecture | CC | SMs | Memory | L2 Cache | Locked P0 Clock | Calibration Status |
+| --- | --- | --- | ---: | --- | --- | ---: | --- |
+| `nvidia/h200_sxm` | `sm_90a` (Hopper) | `9.0a` | `132` | `141 GiB HBM3e` (`4,800 GB/s`) | `50 MiB` (80 banks) | `1,980 MHz` | **Calibrated** (`h200-sxm-v1`, `437 ns` floor) |
+| `nvidia/b200_sxm` | `sm_100a` (Blackwell) | `10.0a` | `148` | `192 GiB HBM3e` (`8,000 GB/s`) | `126.5 MiB` | `1,965 MHz` | **Calibrated** (`b200-modal-events-v1`, `6.085 µs` floor) |
+| `nvidia/b300_sxm` | `sm_103a` (Blackwell Ultra) | `10.3a` | `148` | `262 GiB HBM3e` (`8,000 GB/s`) | `126.5 MiB` | `2,032 MHz` | **Calibrated** (`b300-modal-events-v1`, `5.873 µs` floor) |
+| `nvidia/ptx` | Virtual PTX ISA | Virtual | `132` | `141 GiB` logical | Per-SM 128B lines | `1,730 MHz` fitted | **Calibrated** (`1.04 µs` floor) |
+| `y1/simt-4x4` | Y1-SIMT (4-lane) | Reference | `1` | `262,144` scalars | Direct | `1,000 MHz` | **Reference** (fast client smoke tests) |
+
+## Architectural modeling highlights
+
+### Hopper (`nvidia/h200_sxm`, `sm_90a`)
+- Full 32-lane SIMT execution with uniform registers (`UR0..UR63`), 228 KiB per-SM shared memory, warp-group matrix multiply-accumulate (`WGMMA` / `GMMA`), asynchronous TMA tensor loads/stores (`UTMALDG`, `UTMASTG`, `UTMACCTL`), and hardware `mbarrier` tracking.
+- Explicit memory hierarchy: 32-lane sector coalescer → SMEM/L1 → 4:1 GPC Local Request Concentrator (LRC) → 80-bank IPOLY L2 → HBM3e.
+- **39 / 39** physical H200 conformance cubins bit-identical.
+
+### Blackwell (`nvidia/b200_sxm` `sm_100a` & `nvidia/b300_sxm` `sm_103a`)
+- 148 SMs, 128 uniform registers per warp, 126.5 MiB L2 cache, and **512 × 128 per-SM Tensor Memory (`TMEM`, 256 KiB/SM)** with deterministic `UTMALDG` / `tcgen05` (`UTCHMMA`, `TMEM` alloc/load/store/dealloc) modeling and automatic **TMEM leak detection**.
+- **81 / 81** Qwen3.5 `sm_100a` and **81 / 81** Qwen3.5 `sm_103a` production serving kernels decoded with 0 errors; **4 / 5** FlashInfer OSS B300 binaries validated (`UTCCP` and `UTCOMMA` queued for FP4-GEMM).
+- Zero-leakage calibrations fitted on locked-clock Modal B200 (`1,965 MHz`) and B300 SXM6 (`2,032 MHz`) silicon using RMSNorm + SwiGLU only, then validated **100% held-out** on Decode GEMM (`18.3%` MAE / `0/20` inversions on B200; `18.0%` MAE on B300).
+
+## Calibration honesty invariant
+
+Uncalibrated internal slices or future hardware targets always emit `predicted_ps: null` and `latency_us: null` rather than guessing microsecond latency. Every calibrated flagship target (`nvidia/h200_sxm`, `nvidia/b200_sxm`, `nvidia/b300_sxm`) emits deterministic `cycles`, `predicted_ps`, and `latency_us`.
+
+## AMD CDNA (Founding Partner track)
+
+AMD Instinct (`MI300X` / `MI325X` / `MI355X`, `gfx942` / `gfx950` `.hsaco`) is intentionally not live yet while Hopper and Blackwell coverage expands. Teams building custom ROCm/Triton kernels can contact [harsh@theoric.com](mailto:harsh@theoric.com) to scope the Founding AMD CDNA Partner track.

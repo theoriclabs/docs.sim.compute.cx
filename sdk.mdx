@@ -1,0 +1,92 @@
+---
+title: Python SDK
+description: Stdlib-only TSimClient for Python RL rollout workers, autonomous kernel-search loops, and CI verification.
+---
+
+`TSimClient` (`integrations/python_sdk/tsim_client.py`) uses the **Python standard library only**—zero CUDA, zero PyTorch, and zero third-party packages required. It supports direct HTTP transport (`transport="http"`) or delegating to `tsim-cli`.
+
+## Initialize client
+
+```python
+import os
+from tsim_client import TSimClient
+
+client = TSimClient(
+    url=os.environ.get("TSIM_API_URL", "https://api.sim.compute.cx"),
+    transport="http",
+    api_key=os.environ["TSIM_API_KEY"],
+    timeout=180.0,
+)
+```
+
+## Core methods
+
+| Method | Endpoint | Behavior |
+| --- | --- | --- |
+| `client.healthz()` | `GET /healthz` | Liveness check |
+| `client.readyz()` | `GET /readyz` | Readiness, target list, concurrency, and compiler info |
+| `client.whoami()` | `GET /v2/auth/whoami` | Verify active Bearer token and read per-key `eval_count` |
+| `client.list_hardware()` | `GET /v2/hardware` | List all registered GPU targets |
+| `client.get_hardware(target)` | `GET /v2/hardware/{target}` | Inspect one GPU SKU |
+| `client.ensure_blob_bytes(raw)` | `HEAD` + `POST /v2/blobs` | SHA-256 deduplicated byte upload |
+| `client.ensure_blob_file(path)` | `HEAD` + `POST /v2/blobs` | SHA-256 deduplicated file upload |
+| `client.compile(...)` | `POST /v2/compile` | Compile CUDA/PTX/Triton on CPU with automatic `429` retry |
+| `client.evaluate(req_dict)` | `POST /v2/evaluate` | Execute, verify, and time with automatic `429` retry |
+
+## End-to-end compile + evaluate example
+
+```python
+import os, struct
+from tsim_client import TSimClient
+
+client = TSimClient(
+    url=os.environ.get("TSIM_API_URL", "https://api.sim.compute.cx"),
+    transport="http",
+    api_key=os.environ["TSIM_API_KEY"],
+)
+
+print("Authenticated as:", client.whoami()["email"])
+
+src = r'''
+extern "C" __global__ void scale_f32(const float* x, float* y, float alpha, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) y[i] = x[i] * alpha;
+}
+'''
+
+comp = client.compile(
+    language="cuda",
+    source=src,
+    target="nvidia/h200_sxm",
+    entry="scale_f32",
+    flags=["-O3"],
+)
+assert comp["status"] == "ok", comp
+
+x_ref = client.ensure_blob_bytes(struct.pack("<32f", *[float(i) for i in range(32)]))["ref"]
+exp_ref = client.ensure_blob_bytes(struct.pack("<32f", *[float(i) * 2.5 for i in range(32)]))["ref"]
+
+resp = client.evaluate({
+    "job_id": "sdk_scale_h200",
+    "target": "nvidia/h200_sxm",
+    "artifact": {"format": "cubin", "blob_ref": comp["blob_ref"], "entry": "scale_f32"},
+    "buffers": {
+        "x": {"blob_ref": x_ref, "size_bytes": 128, "dtype": "fp32", "shape": [32], "access": "ro"},
+        "y": {"size_bytes": 128, "dtype": "fp32", "shape": [32], "access": "wo"},
+    },
+    "cases": [{
+        "case_id": "c0",
+        "launches": [{
+            "grid": [1, 1, 1],
+            "block": [32, 1, 1],
+            "args": ["buf:x", "buf:y", {"f32": 2.5}, {"i32": 32}],
+        }],
+    }],
+    "protocol": {"mode": "verify_and_time", "cache_state": "cold_l2", "replay_count": 1},
+    "verification": {"comparator": "exact_bytes", "expected_outputs": {"y": exp_ref}},
+    "diagnostics": {"level": "instruction_hotspots", "top_k": 3},
+})
+
+c0 = resp["cases"][0]
+print(c0["status"], c0["timing"], c0["diagnostics"]["summary_counters"])
+```

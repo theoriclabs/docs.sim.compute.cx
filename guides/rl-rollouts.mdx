@@ -1,0 +1,40 @@
+---
+title: RL Rollouts & Autonomous Kernel Search
+description: Using tsim as a deterministic, zero-GPU reward engine for GRPO/PPO kernel RL and autonomous LLM kernel optimization loops.
+---
+
+Training kernel-writing policies or running autonomous CUDA/Triton search loops on physical H200 and B300 nodes is expensive, noisy, and vulnerable to sticky `cudaErrorIllegalAddress` hangs and PyTorch-fallback reward hacking. **tsim replaces the inner evaluation loop with deterministic CPU calls to `https://api.sim.compute.cx`.**
+
+## Why virtual silicon works as an RL reward signal
+
+1. **Zero reward hacking by construction:** tsim executes compiled SASS/PTX instructions—there is no Python runtime or cuBLAS fallback inside the simulator.
+2. **Zero GPU hangs:** Out-of-bounds reads, misaligned stores, and Blackwell TMEM leaks return clean `runtime_error` receipts in milliseconds instead of wedging a GPU node.
+3. **Zero timing jitter:** Identical binaries produce identical cycle counts and calibrated `latency_us` across runs, eliminating thermal/clock noise during GRPO advantage estimation.
+4. **High ranking correlation:** Verified `ρ = 0.9827` (H200), `ρ = 0.9802` (B200), and `ρ = 0.9662` (B300) with **`9 / 9` exact #1 winner transfer** across full LLM forward-pass layers.
+
+## Recommended reward function pattern
+
+```python
+def score_candidate(client, cuda_src: str, entry: str, target: str, base_req: dict, baseline_us: float) -> float:
+    comp = client.compile(language="cuda", source=cuda_src, target=target, entry=entry, flags=["-O3"])
+    if comp.get("status") != "ok":
+        return -1.0  # compile error
+
+    req = dict(base_req)
+    req["target"] = target
+    req["artifact"] = {"format": "cubin", "blob_ref": comp["blob_ref"], "entry": entry}
+    resp = client.evaluate(req)
+    case0 = resp["cases"][0]
+
+    if case0["status"] != "ok" or not case0.get("correctness", {}).get("passed"):
+        return -0.5  # runtime_error, numerical_mismatch, timeout, or refused
+
+    lat_us = case0["timing"]["latency_us"]
+    return baseline_us / max(lat_us, 1e-6)  # deterministic speedup reward
+```
+
+## Scaling tips
+
+- **Upload shared input/expected blobs once:** Reuse the same `sha256:...` references across all candidates in a rollout batch.
+- **Batch concurrency up to `8` workers per instance:** `tsim-api` scales `7.32×` linearly across 8 CPU cores at `~12 MiB` RAM per concurrent eval; retry gracefully on `429 Retry-After`.
+- **Verify top-K winners once on physical silicon:** Run 40+ optimization rounds on CPU, then verify only the top 1–3 candidates on real H200 / B200 / B300 hardware (for example via [Compute](https://docs.compute.cx) or Modal).
