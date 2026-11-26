@@ -69,7 +69,12 @@ exp_ref = client.ensure_blob_bytes(struct.pack("<32f", *[float(i) * 2.5 for i in
 resp = client.evaluate({
     "job_id": "sdk_scale_h200",
     "target": "nvidia/h200_sxm",
-    "artifact": {"format": "cubin", "blob_ref": comp["blob_ref"], "entry": "scale_f32"},
+    "artifact": {
+        "format": "cubin",
+        "blob_ref": comp["blob_ref"],
+        "entry": "scale_f32",
+        "toolchain": {"compiler": "nvcc", "version": "12.9", "flags": ["-O3"]},
+    },
     "buffers": {
         "x": {"blob_ref": x_ref, "size_bytes": 128, "dtype": "fp32", "shape": [32], "access": "ro"},
         "y": {"size_bytes": 128, "dtype": "fp32", "shape": [32], "access": "wo"},

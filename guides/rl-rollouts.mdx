@@ -22,7 +22,12 @@ def score_candidate(client, cuda_src: str, entry: str, target: str, base_req: di
 
     req = dict(base_req)
     req["target"] = target
-    req["artifact"] = {"format": "cubin", "blob_ref": comp["blob_ref"], "entry": entry}
+    req["artifact"] = {
+        "format": "cubin",
+        "blob_ref": comp["blob_ref"],
+        "entry": entry,
+        "toolchain": {"compiler": "nvcc", "version": "12.9", "flags": ["-O3"]},
+    }
     resp = client.evaluate(req)
     case0 = resp["cases"][0]
 
